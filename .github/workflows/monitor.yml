@@ -109,7 +109,13 @@ jobs:
 
       - name: Zapisz stan w repozytorium
         if: always()
+        env:
+          BRANCH: ${{ github.ref_name }}
         run: |
+          if [ ! -d state ]; then
+            echo "Brak katalogu state - nie ma czego zapisywac."
+            exit 0
+          fi
           if [ -z "$(git status --porcelain -- state)" ]; then
             echo "Stan sie nie zmienil - nie ma czego commitowac."
             exit 0
@@ -117,18 +123,57 @@ jobs:
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state
-          git commit -m "Aktualizacja stanu bazy ISO [skip ci]"
+
+          # Katalog state/ to dane wyliczane od zera przy kazdym przebiegu, wiec przy
+          # rozjezdzie z galezia zdalna nie ma czego scalac - swiezo policzony snapshot
+          # jest z definicji nowszy i wygrywa. Wczesniejsza wersja robila tu
+          # "git pull --rebase", co na pliku 3 MB konczylo sie konfliktem i zostawialo
+          # repozytorium w stanie detached HEAD ("You are not currently on a branch").
+          BACKUP="$(mktemp -d)"
+          cp -a state/. "$BACKUP/"
+          echo "Kopia swiezo policzonego stanu: $BACKUP"
 
           for attempt in 1 2 3; do
-            if git push; then
+            echo "--- proba $attempt/3 ---"
+
+            # wyjdz z niedokonczonej operacji, jesli poprzednia proba cos zostawila
+            git rebase --abort      2>/dev/null || true
+            git merge --abort       2>/dev/null || true
+            git cherry-pick --abort 2>/dev/null || true
+
+            # ustaw sie twardo na aktualnym czubku galezi zdalnej
+            if ! git fetch --force origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"; then
+              echo "Nie udalo sie pobrac galezi - ponawiam."
+              sleep 5
+              continue
+            fi
+            if ! git checkout --force -B "$BRANCH" "refs/remotes/origin/$BRANCH"; then
+              echo "Nie udalo sie przelaczyc na galaz - ponawiam."
+              sleep 5
+              continue
+            fi
+
+            # odtworz swiezo policzony stan na czystej galezi
+            rm -rf state
+            mkdir -p state
+            cp -a "$BACKUP/." state/
+
+            if [ -z "$(git status --porcelain -- state)" ]; then
+              echo "Zdalny stan jest juz identyczny - nie ma czego zapisywac."
+              exit 0
+            fi
+
+            git add -A state
+            git commit -q -m "Aktualizacja stanu bazy ISO [skip ci]"
+
+            if git push origin "HEAD:refs/heads/$BRANCH"; then
               echo "Stan zapisany."
               exit 0
             fi
-            echo "Push nieudany (proba $attempt/3) - odswiezam galaz i probuje ponownie."
-            git pull --rebase --autostash origin "$GITHUB_REF_NAME" || true
+
+            echo "Push odrzucony - galaz zmienila sie w trakcie, powtarzam."
             sleep 5
           done
 
-          echo "::error::Nie udalo sie zapisac stanu do repozytorium."
+          echo "::error::Nie udalo sie zapisac stanu do repozytorium po 3 probach."
           exit 1
