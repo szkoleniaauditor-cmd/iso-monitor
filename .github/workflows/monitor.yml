@@ -90,8 +90,10 @@ jobs:
           #  - pozniej pracuj w trybie podgladu (nie zuzywaj stanu, nic nie gin).
           if [ -z "$DISCORD_WEBHOOK_URL" ]; then
             if [ -f state/iso_snapshot.csv ]; then
+              # --baseline wybrany recznie ma pierwszenstwo: uzytkownik swiadomie chce
+              # przebudowac stan, wiec nie degradujemy tego do trybu podgladu.
               case "$FLAGS" in
-                *--dry-run*) ;;
+                *--dry-run*|*--baseline*) ;;
                 *) FLAGS="$FLAGS --dry-run"
                    echo "::warning::Brak webhooka - tryb podgladu, stan nie zostanie zmieniony." ;;
               esac
