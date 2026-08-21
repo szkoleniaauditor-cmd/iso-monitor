@@ -1,0 +1,134 @@
+name: Monitor ISO
+
+on:
+  # Co 4 godziny (czas UTC). GitHub potrafi opoznic start o kilka-kilkanascie minut.
+  schedule:
+    - cron: '0 */4 * * *'
+
+  # Reczne uruchomienie z zakladki Actions
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Tryb testowy - nie wysylaj nic na Discord'
+        type: boolean
+        default: false
+      baseline:
+        description: 'Zapisz stan bazowy od nowa (bez powiadomien)'
+        type: boolean
+        default: false
+      force:
+        description: 'Pobierz CSV nawet jesli sie nie zmienil (ignoruj ETag)'
+        type: boolean
+        default: false
+
+# Token potrzebuje prawa zapisu, zeby zacommitowac katalog state/
+permissions:
+  contents: write
+
+# Dwa przebiegi naraz probowalyby zapisac stan jednoczesnie
+concurrency:
+  group: monitor-iso
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Sprawdz nowosci ISO
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+
+      - name: Skonfiguruj Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Zainstaluj zaleznosci
+        run: pip install -r requirements.txt
+
+      - name: Sprawdz konfiguracje
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::warning::Brak sekretu DISCORD_WEBHOOK_URL - powiadomienia nie beda wysylane."
+            echo "Dodaj go w: Settings -> Secrets and variables -> Actions -> New repository secret"
+          else
+            echo "Sekret DISCORD_WEBHOOK_URL jest ustawiony."
+          fi
+
+      - name: Uruchom monitor
+        env:
+          # --- wymagane ---
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+          # --- opcjonalne (szczegoly w README) ---
+          DISCORD_USERNAME: 'ISO Nowosci'
+          MAX_MESSAGES: '250'
+          STAGE_WATCH_PREFIXES: '40,50'
+          IGNORE_DELETED_PROJECTS: 'true'
+          NOTIFY_ALL_STAGE_CHANGES: 'false'
+          # FILTER_COMMITTEES: 'ISO/TC 176,ISO/IEC JTC 1/SC 27'
+          # FILTER_TYPES: 'IS,TS'
+          # FILTER_KEYWORDS: 'security,quality'
+
+          # --- parametry recznego uruchomienia ---
+          IN_DRY_RUN: ${{ inputs.dry_run }}
+          IN_BASELINE: ${{ inputs.baseline }}
+          IN_FORCE: ${{ inputs.force }}
+        run: |
+          FLAGS=""
+          if [ "$IN_DRY_RUN" = "true" ];  then FLAGS="$FLAGS --dry-run";  fi
+          if [ "$IN_BASELINE" = "true" ]; then FLAGS="$FLAGS --baseline"; fi
+          if [ "$IN_FORCE" = "true" ];    then FLAGS="$FLAGS --force";    fi
+
+          # Bez webhooka nie ma dokad wysylac. Zamiast konczyc bledem:
+          #  - przy pierwszym przebiegu zapisz stan bazowy,
+          #  - pozniej pracuj w trybie podgladu (nie zuzywaj stanu, nic nie gin).
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            if [ -f state/iso_snapshot.csv ]; then
+              case "$FLAGS" in
+                *--dry-run*) ;;
+                *) FLAGS="$FLAGS --dry-run"
+                   echo "::warning::Brak webhooka - tryb podgladu, stan nie zostanie zmieniony." ;;
+              esac
+            else
+              case "$FLAGS" in
+                *--baseline*) ;;
+                *) FLAGS="$FLAGS --baseline"
+                   echo "::notice::Brak webhooka - zapisuje sam stan bazowy." ;;
+              esac
+            fi
+          fi
+
+          echo "Uruchamiam: python monitor.py $FLAGS"
+          python monitor.py $FLAGS
+
+      - name: Zapisz stan w repozytorium
+        if: always()
+        run: |
+          if [ -z "$(git status --porcelain -- state)" ]; then
+            echo "Stan sie nie zmienil - nie ma czego commitowac."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state
+          git commit -m "Aktualizacja stanu bazy ISO [skip ci]"
+
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Stan zapisany."
+              exit 0
+            fi
+            echo "Push nieudany (proba $attempt/3) - odswiezam galaz i probuje ponownie."
+            git pull --rebase --autostash origin "$GITHUB_REF_NAME" || true
+            sleep 5
+          done
+
+          echo "::error::Nie udalo sie zapisac stanu do repozytorium."
+          exit 1

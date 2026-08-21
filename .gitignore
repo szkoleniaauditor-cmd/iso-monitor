@@ -1,0 +1,22 @@
+# Pobrany plik CSV z ISO (ok. 60 MB) - nigdy nie trafia do repozytorium
+data/
+*.part
+*.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Edytory / system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Artefakty budowania wersji desktopowej
+build/
+dist/
+*.spec

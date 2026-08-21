@@ -1,0 +1,5 @@
+# Repozytorium jest budowane na Linuksie (GitHub Actions) - wymuszamy LF,
+# zeby skrypty powloki w workflow nie dostaly koncow linii CRLF z Windows.
+* text=auto eol=lf
+*.png binary
+*.ico binary
