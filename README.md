@@ -13,6 +13,7 @@ Działa w całości na **GitHub Actions** — nie potrzebujesz własnego serwera
 
 - [Co monitoruje](#-co-monitoruje)
 - [Jak wygląda powiadomienie](#-jak-wygląda-powiadomienie)
+- [Codzienny raport o 21:00](#-codzienny-raport-o-2100)
 - [Pliki w projekcie](#-pliki-w-projekcie)
 - [Wdrożenie krok po kroku](#-wdrożenie-krok-po-kroku)
 - [Wersja okienkowa na Windows](#️-wersja-okienkowa-na-windows)
@@ -69,11 +70,56 @@ Plik **`ikona.png`** jest używany jako **avatar bota** przy każdej wiadomości
 
 ---
 
+## 📅 Codzienny raport o 21:00
+
+Poza powiadomieniami na bieżąco raz dziennie przychodzi zbiorcze sprawozdanie z całej doby —
+**zwykła wiadomość tekstowa, nie karta embed**, żeby mieściła się w limicie 2000 znaków
+konta bez Nitro:
+
+```
+📋 RAPORT ISO | Poniedziałek 24.08.2026
+━━━━━━━━━━━━━━━━━━━━
+📊 Sprawdzono: 81 323 norm
+🔔 Zmian dzisiaj: 6
+   🆕 1   🔄 1   ⛔ 1   ⏳ 3
+
+🆕 ISO/IEC 9593-1:1990/Amd 1:1995 - Information processing systems…
+🔄 ISO 2110:1989/Amd 1:1991 - Information technology — Data communication…
+⛔ ISO/R 102:1959 - wycofana
+⏳ ISO/DIS 14060 - Net zero aligned organizations
+⏳ ISO/DIS 19186-1 - Geographic information — GeoSPARQL — Part 1:…
+⏳ ISO/FDIS 37194 - Smart community infrastructures — Disaster ri…
+
+⏰ Następne sprawdzenie: dziś o 23:00
+━━━━━━━━━━━━━━━━━━━━
+```
+
+Gdy nic się nie wydarzyło, raport jest krótki: **„😴 ISO spokojne — brak nowości."**
+
+Jeśli zmian jest tak dużo, że lista nie mieści się w limicie, raport pokazuje ich tyle,
+ile wejdzie, i kończy dopiskiem `…i N więcej` — wiadomość nigdy nie przekroczy 2000 znaków.
+
+**Jak liczone jest „dzisiaj".** Raport nie czyta historii (monitor jej nie prowadzi — plik stanu
+to migawka bazy bez znaczników czasu). Zamiast tego trzyma **własny punkt odniesienia**
+w `state/raport_snapshot.csv` i porównuje z nim aktualny stan bazy ISO. Dzięki temu obejmuje
+dokładnie okres od poprzedniego raportu i działa niezależnie od tego, ile razy monitor się wykonał.
+
+**Godzina.** Cron w GitHub Actions zna wyłącznie UTC i nie uwzględnia zmiany czasu, dlatego
+w harmonogramie są dwa wpisy — `0 19 * * *` (czas letni) i `0 20 * * *` (zimowy) — a zadanie
+sprawdza realną godzinę w Warszawie i kończy się bez wysyłki, jeśli akurat nie jest 21:00.
+Raport przychodzi więc o 21:00 czasu polskiego przez cały rok.
+
+Raport można też wysłać ręcznie o dowolnej porze: **Actions → Monitor ISO → Run workflow**,
+zaznaczając opcję **„Wyslij raport dzienny"**.
+
+---
+
 ## 📁 Pliki w projekcie
 
 ```
 ISO NOWOSCI/
 ├── monitor.py                    # cała logika: pobieranie, porównanie, wysyłka
+├── raport.py                     # codzienne sprawozdanie na Discord (21:00)
 ├── app.py                        # wersja okienkowa na Windows (nakładka na monitor.py)
 ├── utworz_skrot.py               # tworzy skrót „ISO Monitor” na pulpicie
 ├── requirements.txt              # zależność wersji serwerowej: requests
@@ -84,7 +130,7 @@ ISO NOWOSCI/
 ├── .gitignore                    # pilnuje, by 60 MB CSV nie trafiło do repozytorium
 ├── .github/
 │   └── workflows/
-│       └── monitor.yml           # harmonogram GitHub Actions (co 4 godziny)
+│       └── monitor.yml           # harmonogram GitHub Actions (monitor + raport)
 ├── state/                        # ← tworzone automatycznie, commitowane do repo
 │   ├── iso_snapshot.csv          #   stan poprzedniego pobrania (~3 MB)
 │   └── meta.json                 #   ETag, data ostatniego przebiegu, liczba rekordów
@@ -99,6 +145,7 @@ Aplikacja ma **dwa niezależne tryby pracy** — możesz używać jednego albo o
 | Plik | `monitor.py` | `app.py` |
 | Gdzie działa | GitHub Actions (w chmurze) | Twój komputer z Windows |
 | Kiedy sprawdza | co 4 godziny, zawsze | gdy aplikacja jest uruchomiona |
+| Raport dzienny | tak, o 21:00 | nie |
 | Komputer musi być włączony | nie | tak |
 | Powiadomienia | Discord | Discord + lista w oknie |
 
@@ -210,8 +257,9 @@ Po zakończeniu:
 ### Krok 6 — Gotowe
 
 Od tej chwili workflow uruchamia się **automatycznie co 4 godziny**
-(o 00:00, 04:00, 08:00, 12:00, 16:00 i 20:00 czasu UTC) i wysyła powiadomienia
-wyłącznie o rzeczywistych zmianach.
+(o 01:00, 05:00, 09:00, 13:00, 17:00 i 21:00 czasu UTC) i wysyła powiadomienia
+wyłącznie o rzeczywistych zmianach. Dodatkowo **codziennie o 21:00 czasu polskiego**
+przychodzi zbiorcze sprawozdanie z całej doby.
 
 Historię przebiegów i podsumowanie każdego z nich znajdziesz w zakładce **Actions**.
 
@@ -295,7 +343,7 @@ env:
 **Zmiana częstotliwości** — sekcja `schedule` w `monitor.yml`:
 
 ```yaml
-    - cron: '0 */4 * * *'    # co 4 godziny (domyślnie)
+    - cron: '0 1,5,9,13,17,21 * * *'   # co 4 godziny (domyślnie)
     # - cron: '0 6 * * *'    # raz dziennie o 06:00 UTC
     # - cron: '0 * * * *'    # co godzinę
 ```

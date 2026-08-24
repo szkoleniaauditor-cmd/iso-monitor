@@ -1,9 +1,16 @@
 name: Monitor ISO
 
 on:
-  # Co 4 godziny (czas UTC). GitHub potrafi opoznic start o kilka-kilkanascie minut.
   schedule:
-    - cron: '0 */4 * * *'
+    # Monitor co 4 godziny. Godziny 19 i 20 UTC sa wolne - naleza do raportu.
+    - cron: '0 1,5,9,13,17,21 * * *'
+
+    # Raport dzienny o 21:00 czasu warszawskiego. Cron w GitHub Actions zna
+    # tylko UTC i nie uwzglednia zmiany czasu, wiec sa dwa wpisy:
+    - cron: '0 19 * * *'    # 21:00 w Warszawie w czasie letnim (CEST)
+    - cron: '0 20 * * *'    # 21:00 w Warszawie w czasie zimowym (CET)
+    # Zadanie raportu sprawdza realna godzine w Warszawie i wychodzi, jesli
+    # akurat nie jest 21 - dzieki temu wysylka jest dokladnie raz dziennie.
 
   # Reczne uruchomienie z zakladki Actions
   workflow_dispatch:
@@ -20,6 +27,10 @@ on:
         description: 'Pobierz CSV nawet jesli sie nie zmienil (ignoruj ETag)'
         type: boolean
         default: false
+      raport:
+        description: 'Wyslij raport dzienny zamiast sprawdzania (o dowolnej porze)'
+        type: boolean
+        default: false
 
 # Token potrzebuje prawa zapisu, zeby zacommitowac katalog state/
 permissions:
@@ -33,6 +44,12 @@ concurrency:
 jobs:
   monitor:
     name: Sprawdz nowosci ISO
+    # Nie uruchamiaj sie o porach zarezerwowanych dla raportu ani gdy raport
+    # zostal wywolany recznie.
+    if: >-
+      github.event.schedule != '0 19 * * *' &&
+      github.event.schedule != '0 20 * * *' &&
+      !inputs.raport
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -133,3 +150,82 @@ jobs:
           # Jawne HEAD:main omija blad "You are not currently on a branch".
           git push origin HEAD:main --force
           echo "Stan zapisany."
+
+  # ------------------------------------------------------------------------
+  # Codzienne sprawozdanie na Discord - zwykla wiadomosc tekstowa (bez embedow),
+  # zeby zmiescic sie w limicie 2000 znakow konta bez Nitro.
+  # ------------------------------------------------------------------------
+  raport:
+    name: Raport dzienny
+    if: >-
+      github.event.schedule == '0 19 * * *' ||
+      github.event.schedule == '0 20 * * *' ||
+      inputs.raport
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Sprawdz pore w Warszawie
+        id: pora
+        env:
+          RECZNIE: ${{ inputs.raport }}
+        run: |
+          GODZINA="$(TZ=Europe/Warsaw date +%H)"
+          echo "W Warszawie jest teraz godzina $GODZINA."
+          if [ "$RECZNIE" = "true" ]; then
+            echo "Uruchomienie reczne - wysylam niezaleznie od pory."
+            echo "wysylac=true" >> "$GITHUB_OUTPUT"
+          elif [ "$GODZINA" = "21" ]; then
+            echo "Pora na raport dzienny."
+            echo "wysylac=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "wysylac=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Nie jest 21:00 w Warszawie - ten cron obsluguje druga polowe roku, raport pominiety."
+          fi
+
+      - name: Pobierz repozytorium
+        if: steps.pora.outputs.wysylac == 'true'
+        uses: actions/checkout@v4
+
+      - name: Skonfiguruj Pythona
+        if: steps.pora.outputs.wysylac == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Zainstaluj zaleznosci
+        if: steps.pora.outputs.wysylac == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Wyslij raport na Discord
+        if: steps.pora.outputs.wysylac == 'true'
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_USERNAME: 'ISO Nowosci'
+          # Raport respektuje te same filtry co monitor
+          # FILTER_COMMITTEES: 'ISO/TC 176,ISO/IEC JTC 1/SC 27'
+          # FILTER_TYPES: 'IS,TS'
+          # FILTER_KEYWORDS: 'security,quality'
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::warning::Brak sekretu DISCORD_WEBHOOK_URL - raport tylko w logu przebiegu."
+            python raport.py --dry-run
+          else
+            python raport.py
+          fi
+
+      - name: Zapisz punkt odniesienia raportu
+        if: always() && steps.pora.outputs.wysylac == 'true'
+        run: |
+          if [ -z "$(git status --porcelain -- state)" ]; then
+            echo "Punkt odniesienia bez zmian - nie ma czego commitowac."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state
+          git commit -m "Punkt odniesienia raportu dziennego [skip ci]"
+          git push origin HEAD:main --force
+          echo "Punkt odniesienia zapisany."
