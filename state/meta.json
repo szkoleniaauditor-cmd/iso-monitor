@@ -1,9 +1,9 @@
 {
-  "etag": "0x8DF2F0C3CFD6452",
-  "last_modified": "Wed, 21 Oct 2026 00:42:51 GMT",
-  "bytes": 60058790,
-  "last_run": "2026-10-21T05:41:09.126227+00:00",
-  "rows": 81670,
+  "etag": "0x8DF348C2A95397C",
+  "last_modified": "Wed, 28 Oct 2026 00:41:12 GMT",
+  "bytes": 60099982,
+  "last_run": "2026-10-28T06:36:01.389630+00:00",
+  "rows": 81719,
   "baseline": false,
-  "last_changes": 215
+  "last_changes": 231
 }
